@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Đăng ký môn học VNU</title>
+    <!-- Thêm Google Font Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="header">
+        <div class="header-title">
+            <h2>Công cụ hỗ trợ ĐKMH VNU</h2>
+            <img src="../logo/hamster-meme-goofy-hamster.png" alt="Logo" class="header-logo">
+        </div>
+        <div class="header-actions">
+            <button id="btnToggleMeme" class="btn-icon-text" title="Bật/Tắt Meme Giải trí">🐱 <span class="pin-text">Meme</span></button>
+            <button id="btnTogglePin" class="btn-icon-text" title="Chuyển thành cửa sổ nổi / Ghim">📌 <span class="pin-text">Nổi</span></button>
+            <button id="btnSettings" class="btn-icon-text" title="Cài đặt">⚙️ Cài đặt</button>
+        </div>
+    </div>
+
+    <!-- Màn hình chính -->
+    <div id="mainView" class="view active">
+        <div class="toolbar">
+            <button id="btnScanAll" class="btn btn-primary" title="Highlight tất cả môn học trên trang">Quét tất cả</button>
+            <button id="btnAdd" class="btn btn-secondary">+ Thêm</button>
+            <button id="btnClearAll" class="btn btn-danger">Xóa tất cả</button>
+            <input type="file" id="csvFileInput" accept=".csv" style="display: none;">
+            <button id="btnImportCsv" class="btn btn-secondary" title="Tải lên file danh sách môn học">Tải lên CSV</button>
+            <button id="btnDownloadTemplate" class="btn btn-secondary" title="Tải file mẫu để điền">Tải file mẫu</button>
+        </div>
+
+        <div id="subjectList" class="subject-list">
+            <!-- Danh sách các môn học sẽ được thêm bằng JS -->
+        </div>
+
+        <div class="donate-section">
+            <button id="btnShowDonate" class="btn btn-secondary" style="width: 100%;">☕ Ủng hộ tác giả</button>
+        </div>
+    </div>
+
+    <!-- Modal Donate -->
+    <div id="donateModal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" id="btnCloseDonate">&times;</span>
+            <h3>Ủng hộ tác giả ☕</h3>
+            <img src="../assets/qr/qr_code.png" alt="QR Donate" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+            <div class="no-qr" style="display: none; font-size: 13px; color: #888; margin-top: 15px;">
+                (Chưa tìm thấy ảnh.<br>Hãy thêm file <b>qr_code.png</b> vào thư mục <b>assets/qr</b>)
+            </div>
+        </div>
+    </div>
+
+    <!-- Màn hình Cài đặt -->
+    <div id="settingsView" class="view">
+        <h3>Cài đặt hiển thị</h3>
+        <p class="settings-desc">Đổi tên các nhãn (label) trên các ô nhập liệu.</p>
+        <div class="settings-form">
+            <div class="form-group">
+                <label>Tên môn học</label>
+                <input type="text" id="labelName" value="Tên môn học">
+            </div>
+            <div class="form-group">
+                <label>Mã lớp học phần</label>
+                <input type="text" id="labelCode" value="Mã lớp học phần">
+            </div>
+            <div class="form-group">
+                <label>Thứ</label>
+                <input type="text" id="labelDay" value="Thứ">
+            </div>
+            <div class="form-group">
+                <label>Ca</label>
+                <input type="text" id="labelShift" value="Ca">
+            </div>
+            <div class="form-group">
+                <label>Giảng đường</label>
+                <input type="text" id="labelRoom" value="Giảng đường">
+            </div>
+            <div class="settings-actions">
+                <button id="btnSaveSettings" class="btn btn-primary">Lưu lại</button>
+                <button id="btnResetSettings" class="btn btn-danger">Khôi phục gốc</button>
+                <button id="btnCloseSettings" class="btn btn-secondary">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Meme Container -->
+    <div id="memeContainer" style="display: none; position: fixed; bottom: 20px; right: 20px; z-index: 9999; pointer-events: none;">
+        <img src="../assets/gif/meme.gif" alt="Dancing Meme Right" style="width: 120px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+    </div>
+    
+    <div id="memeContainerCenter" style="display: none; position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; pointer-events: none;">
+        <img src="../assets/gif/center.gif" alt="Dancing Meme Center" onerror="this.style.display='none'" style="width: 120px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+    </div>
+
+    <div id="memeContainerLeft" style="display: none; position: fixed; bottom: 20px; left: 20px; z-index: 9999; pointer-events: none;">
+        <img src="../assets/gif/tungtung.gif" alt="Dancing Meme Left" onerror="this.style.display='none'" style="width: 120px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
+    </div>
+
+    <!-- Template cho 1 hàng môn học -->
+    <template id="subjectRowTemplate">
+        <div class="subject-row">
+            <div class="inputs-grid">
+                <input type="text" class="input-name" placeholder="Tên môn học">
+                <input type="text" class="input-code" placeholder="Mã lớp học phần">
+                <input type="text" class="input-day" placeholder="Thứ">
+                <input type="text" class="input-shift" placeholder="Ca">
+                <input type="text" class="input-room" placeholder="Giảng đường">
+                <input type="color" class="input-color" value="#ffff00" title="Màu Highlight">
+            </div>
+            <div class="row-actions">
+                <button class="btn btn-search btn-icon" title="Tìm kiếm">🔍 Tìm</button>
+                <button class="btn btn-prev btn-icon" title="Kết quả trước">▲</button>
+                <button class="btn btn-next btn-icon" title="Kết quả tiếp">▼</button>
+                <button class="btn btn-delete btn-icon" title="Xóa">❌</button>
+            </div>
+        </div>
+    </template>
+
+    <script src="popup.js"></script>
+</body>
+</html>
