@@ -25,12 +25,30 @@
     <!-- Màn hình chính -->
     <div id="mainView" class="view active">
         <div class="toolbar">
-            <button id="btnScanAll" class="btn btn-primary" title="Highlight tất cả môn học trên trang">Quét tất cả</button>
-            <button id="btnAdd" class="btn btn-secondary">+ Thêm</button>
+            <button id="btnScanAll" class="btn btn-primary" title="Highlight tất cả môn học trên trang (Ctrl+Shift+S)">Quét tất cả</button>
+            <button id="btnAdd" class="btn btn-secondary" title="Thêm môn học (Ctrl+Shift+A)">+ Thêm</button>
             <button id="btnClearAll" class="btn btn-danger">Xóa tất cả</button>
             <input type="file" id="csvFileInput" accept=".csv" style="display: none;">
             <button id="btnImportCsv" class="btn btn-secondary" title="Tải lên file danh sách môn học">Tải lên CSV</button>
             <button id="btnDownloadTemplate" class="btn btn-secondary" title="Tải file mẫu để điền">Tải file mẫu</button>
+        </div>
+
+        <!-- Hàng tiêu đề cột -->
+        <div class="subject-header-row">
+            <div class="drag-handle-header"></div>
+            <div class="toggle-header" title="Bật/Tắt toàn bộ">
+                <input type="checkbox" id="toggleAll" checked style="cursor: pointer; transform: scale(1.1);" title="Bật/Tắt tất cả" />
+                <span style="font-size: 10px; margin-top: 2px;">Bật/Tắt</span>
+            </div>
+            <div class="inputs-grid-header">
+                <div>Tên môn học</div>
+                <div>Mã lớp</div>
+                <div>Số TC</div>
+                <div>Ca</div>
+                <div>Giảng đường</div>
+                <div>Màu</div>
+            </div>
+            <div class="actions-header">Thao tác</div>
         </div>
 
         <div id="subjectList" class="subject-list">
@@ -79,11 +97,37 @@
                 <label>Giảng đường</label>
                 <input type="text" id="labelRoom" value="Giảng đường">
             </div>
-            <div class="settings-actions">
-                <button id="btnSaveSettings" class="btn btn-primary">Lưu lại</button>
-                <button id="btnResetSettings" class="btn btn-danger">Khôi phục gốc</button>
-                <button id="btnCloseSettings" class="btn btn-secondary">Đóng</button>
+        </div>
+
+        <!-- Feature #14: Tùy chỉnh Highlight -->
+        <h3 style="margin-top: 24px;">Tùy chỉnh Highlight</h3>
+        <p class="settings-desc">Chọn kiểu hiển thị khi highlight trên trang web.</p>
+        <div class="settings-form">
+            <div class="form-group">
+                <label>Kiểu highlight</label>
+                <select id="highlightStyle" class="settings-select">
+                    <option value="background">🎨 Tô nền (Mặc định)</option>
+                    <option value="underline">〰️ Gạch chân lượn sóng</option>
+                    <option value="border">▬ Gạch dưới đậm</option>
+                    <option value="bold">𝐁 In đậm + đổi màu chữ</option>
+                </select>
             </div>
+            <div class="form-group">
+                <label>Độ đậm: <span id="opacityValue">100%</span></label>
+                <input type="range" id="highlightOpacity" min="30" max="100" value="100" class="settings-slider">
+            </div>
+            <div class="form-group">
+                <label>Xem trước</label>
+                <div id="highlightPreview" class="highlight-preview">
+                    <span id="previewText">Mẫu văn bản highlight</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-actions">
+            <button id="btnSaveSettings" class="btn btn-primary">Lưu lại</button>
+            <button id="btnResetSettings" class="btn btn-danger">Khôi phục gốc</button>
+            <button id="btnCloseSettings" class="btn btn-secondary">Đóng</button>
         </div>
     </div>
 
@@ -100,25 +144,48 @@
         <img src="../assets/gif/tungtung.gif" alt="Dancing Meme Left" onerror="this.style.display='none'" style="width: 120px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">
     </div>
 
-    <!-- Template cho 1 hàng môn học -->
+    <!-- Template cho 1 hàng môn học (có drag handle + match counter) -->
     <template id="subjectRowTemplate">
-        <div class="subject-row">
+        <div class="subject-row" draggable="true">
+            <span class="drag-handle" title="Kéo để sắp xếp">⠿</span>
+            <div class="toggle-wrapper">
+                <label class="switch" title="Bật/Tắt tìm kiếm môn này">
+                    <input type="checkbox" class="toggle-active" checked />
+                    <span class="slider round"></span>
+                </label>
+            </div>
             <div class="inputs-grid">
-                <input type="text" class="input-name" placeholder="Tên môn học">
-                <input type="text" class="input-code" placeholder="Mã lớp học phần">
-                <input type="text" class="input-day" placeholder="Thứ">
-                <input type="text" class="input-shift" placeholder="Ca">
-                <input type="text" class="input-room" placeholder="Giảng đường">
-                <input type="color" class="input-color" value="#ffff00" title="Màu Highlight">
+                <input type="text" class="input-name" />
+                <input type="text" class="input-code" />
+                <input type="text" class="input-day" />
+                <input type="text" class="input-shift" />
+                <input type="text" class="input-room" />
+                <input type="color" class="input-color" value="#ffff00" title="Màu bôi đen" />
             </div>
             <div class="row-actions">
-                <button class="btn btn-search btn-icon" title="Tìm kiếm">🔍 Tìm</button>
+                <button class="btn btn-search btn-icon" title="Tìm kiếm (Enter)">🔍 Tìm</button>
+                <span class="match-counter" title="Số kết quả tìm thấy" style="display:none;">0/0</span>
                 <button class="btn btn-prev btn-icon" title="Kết quả trước">▲</button>
                 <button class="btn btn-next btn-icon" title="Kết quả tiếp">▼</button>
                 <button class="btn btn-delete btn-icon" title="Xóa">❌</button>
             </div>
         </div>
     </template>
+
+    <!-- Feature #15: Onboarding Overlay -->
+    <div id="onboardingOverlay" class="onboarding-overlay" style="display: none;">
+        <div class="onboarding-backdrop"></div>
+        <div class="onboarding-tooltip">
+            <div class="onboarding-step-indicator">
+                <span class="onboarding-dots"></span>
+            </div>
+            <p class="onboarding-text"></p>
+            <div class="onboarding-actions">
+                <button id="btnOnboardingSkip" class="btn btn-secondary btn-sm">Bỏ qua</button>
+                <button id="btnOnboardingNext" class="btn btn-primary btn-sm">Tiếp theo →</button>
+            </div>
+        </div>
+    </div>
 
     <script src="popup.js"></script>
 </body>
