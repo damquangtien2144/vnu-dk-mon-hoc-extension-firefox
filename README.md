@@ -12,7 +12,6 @@
   <img src="https://img.shields.io/badge/Mozilla_Firefox-FF7139?style=flat-square&logo=mozilla-firefox&logoColor=white" alt="Mozilla Firefox" />
   <img src="https://img.shields.io/badge/Manifest-V3-blue?style=flat-square" alt="Manifest V3" />
   <img src="https://img.shields.io/badge/Version-1.0.0-green?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/Language-VI%20%7C%20EN-purple?style=flat-square" alt="Language" />
 </p>
 
