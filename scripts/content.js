@@ -3,11 +3,29 @@
 if (typeof window.vnuExtensionLoaded === 'undefined') {
     window.vnuExtensionLoaded = true;
 
+    // Inject custom CSS for highlight blinking animation
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes vnu-blink-anim {
+            50% { 
+                background-color: transparent; 
+                border-color: transparent;
+                text-decoration-color: transparent;
+                text-shadow: none;
+                color: inherit;
+            }
+        }
+        .vnu-blink {
+            animation: vnu-blink-anim 1s infinite !important;
+        }
+    `;
+    document.head.appendChild(style);
+
     // Biến lưu trữ trạng thái các kết quả tìm kiếm của từng môn học
     const subjectMatches = {};
 
     // Lắng nghe message từ Popup
-    browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "HIGHLIGHT") {
             const { subjectId, queries, color, highlightSettings } = request;
             
@@ -45,6 +63,12 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
             if (subjectMatches[subjectId].elements.length > 0) {
                 setFocusHighlight(subjectId, 0);
                 subjectMatches[subjectId].elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            // Phục hồi trạng thái nhấp nháy
+            if (request.isBlinking) {
+                const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subjectId}"]`);
+                marks.forEach(mark => mark.classList.add('vnu-blink'));
             }
             
             sendResponse({ 
@@ -88,9 +112,29 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                 if (subjectMatches[subject.subjectId].elements.length > 0) {
                     setFocusHighlight(subject.subjectId, 0);
                 }
+
+                // Phục hồi trạng thái nhấp nháy
+                if (subject.isBlinking) {
+                    const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subject.subjectId}"]`);
+                    marks.forEach(mark => mark.classList.add('vnu-blink'));
+                }
             });
 
             sendResponse({ success: true, counts: counts });
+        }
+        else if (request.action === "BLINK_HIGHLIGHT") {
+            const { subjectId, isBlinking } = request;
+            const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subjectId}"]`);
+            if (marks.length > 0) {
+                marks.forEach(mark => {
+                    if (isBlinking) {
+                        mark.classList.add('vnu-blink');
+                    } else {
+                        mark.classList.remove('vnu-blink');
+                    }
+                });
+                sendResponse({ success: true });
+            }
         }
         else if (request.action === "NAVIGATE") {
             const { subjectId, direction } = request;
@@ -197,7 +241,7 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         // Tạo iframe
         const iframe = document.createElement('iframe');
         iframe.id = 'vnu-extension-iframe';
-        iframe.src = browser.runtime.getURL('popup/popup.html?mode=iframe');
+        iframe.src = chrome.runtime.getURL('popup/popup.html?mode=iframe');
         iframe.style.width = '100%';
         iframe.style.height = '100%';
         iframe.style.border = 'none';
@@ -292,12 +336,16 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
             newTop = startTop + dy;
         }
 
+        // Boundaries
+        newTop = Math.max(0, newTop);
+        newLeft = Math.max(0, newLeft);
+
         // Min width / height
-        if (newWidth >= 450) {
+        if (newWidth >= 450 && newLeft + newWidth <= window.innerWidth) {
             floatingPanel.style.width = newWidth + 'px';
             if (currentResizerDir.includes('w')) floatingPanel.style.left = newLeft + 'px';
         }
-        if (newHeight >= 300) {
+        if (newHeight >= 300 && newTop + newHeight <= window.innerHeight) {
             floatingPanel.style.height = newHeight + 'px';
             if (currentResizerDir.includes('n')) floatingPanel.style.top = newTop + 'px';
         }
@@ -389,24 +437,7 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         }
     });
 
-    function removeOldHighlights(subjectId = null) {
-        const selector = subjectId 
-            ? `mark.vnu-extension-highlight[data-subject-id="${subjectId}"]`
-            : `mark.vnu-extension-highlight`;
-            
-        const marks = document.querySelectorAll(selector);
-        marks.forEach(mark => {
-            const parent = mark.parentNode;
-            parent.replaceChild(document.createTextNode(mark.textContent), mark);
-            parent.normalize();
-        });
 
-        if (subjectId) {
-            delete subjectMatches[subjectId];
-        } else {
-            Object.keys(subjectMatches).forEach(key => delete subjectMatches[key]);
-        }
-    }
 
     function findSmallestContainers(node, regexQueries) {
         const containers = [];
@@ -568,10 +599,55 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         return str.toLowerCase()
                   .normalize("NFD")
                   .replace(/[\u0300-\u036f]/g, "")
-                  .replace(/d/g, "d");
+                  .replace(/đ/g, "d");
     }
 
     function escapeRegExp(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
+
+    // ======= Feature #16: Global Keyboard Navigation (Ctrl+Arrow) =======
+    let globalNavIndex = -1;
+    let globalNavElements = [];
+
+    function buildGlobalNavList() {
+        globalNavElements = [];
+        Object.keys(subjectMatches).forEach(id => {
+            const matchData = subjectMatches[id];
+            if (matchData && matchData.elements) {
+                matchData.elements.forEach(el => {
+                    globalNavElements.push({ subjectId: id, element: el });
+                });
+            }
+        });
+        // Sort by vertical position on page
+        globalNavElements.sort((a, b) => {
+            const rectA = a.element.getBoundingClientRect();
+            const rectB = b.element.getBoundingClientRect();
+            return (rectA.top + window.scrollY) - (rectB.top + window.scrollY);
+        });
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (!e.ctrlKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+        
+        buildGlobalNavList();
+        if (globalNavElements.length === 0) return;
+        
+        e.preventDefault();
+        
+        // Clear all focus highlights
+        Object.keys(subjectMatches).forEach(id => clearFocusHighlight(id));
+        
+        if (e.key === 'ArrowDown') {
+            globalNavIndex = (globalNavIndex + 1) % globalNavElements.length;
+        } else {
+            globalNavIndex = (globalNavIndex - 1 + globalNavElements.length) % globalNavElements.length;
+        }
+        
+        const target = globalNavElements[globalNavIndex];
+        setFocusHighlight(target.subjectId, 
+            subjectMatches[target.subjectId].elements.indexOf(target.element));
+        target.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
 }

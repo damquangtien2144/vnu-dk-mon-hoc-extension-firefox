@@ -2,13 +2,14 @@
   "manifest_version": 3,
   "name": "Tool hỗ trợ đăng ký môn học VNU",
   "version": "1.0.0",
-  "description": "Cải tiến tính năng Ctrl+F để tìm kiếm môn học nhanh chóng thông qua các thông tin trên thời khóa biểu.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "vnu-dk-tool@quangtien.com",
+      "id": "vnu-dkmh-extension@example.com",
       "strict_min_version": "109.0"
     }
   },
+  "description": "Cải tiến tính năng Ctrl+F để tìm kiếm môn học nhanh chóng thông qua các thông tin trên thời khóa biểu.",
+
   "icons": {
     "16": "logo/hamster-meme-goofy-hamster.png",
     "48": "logo/hamster-meme-goofy-hamster.png",
@@ -50,7 +51,9 @@
         "popup/popup.js",
         "assets/qr/*",
         "assets/gif/*",
-        "logo/*"
+        "logo/*",
+        "libs/*",
+        "i18n/*"
       ],
       "matches": ["<all_urls>"]
     }
