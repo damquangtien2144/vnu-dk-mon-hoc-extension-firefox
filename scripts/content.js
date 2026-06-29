@@ -18,6 +18,16 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         .vnu-blink {
             animation: vnu-blink-anim 1s infinite !important;
         }
+        @keyframes vnu-badge-pop {
+            0% { transform: scale(0.5); opacity: 0; }
+            60% { transform: scale(1.15); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .vnu-deep-reveal-outline {
+            outline: 2px dashed #7c3aed !important;
+            outline-offset: 3px !important;
+            box-shadow: 0 0 20px rgba(124, 58, 237, 0.25) !important;
+        }
     `;
     document.head.appendChild(style);
 
@@ -27,7 +37,7 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
     // Lắng nghe message từ Popup
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "HIGHLIGHT") {
-            const { subjectId, queries, color, highlightSettings } = request;
+            const { subjectId, queries, color, highlightSettings, scanMode } = request;
             
             removeOldHighlights(subjectId);
             
@@ -43,21 +53,34 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
             }
 
             const regexPatterns = queries.map(q => {
-                const norm = normalizeVn(q).trim();
-                return escapeRegExp(norm).replace(/\s+/g, '\\s+');
+                const norm = normalizeVn(q).trim().substring(0, 100);
+                return escapeRegExp(norm).replace(/\s+/g, '\\s{1,10}');
             });
             const regexQueries = regexPatterns.map(p => new RegExp(p, 'i'));
 
             const containers = findSmallestContainers(document.body, regexQueries);
             
+            const validContainers = [];
             containers.forEach(container => {
+                const wasHidden = isElementOrAncestorHidden(container);
+                if (scanMode === 'normal' && wasHidden) return;
+                
+                validContainers.push(container);
+                let matchedHighlights = 0;
                 regexPatterns.forEach(pattern => {
-                    highlightText(container, pattern, color, subjectId, highlightSettings, { count: 0, limit: 1 });
+                    const matches = highlightText(container, pattern, color, subjectId, highlightSettings, { count: 0, limit: 1 });
+                    matchedHighlights += matches.length;
                 });
+                
+                if (matchedHighlights === 0) {
+                    container.classList.add('vnu-fallback-highlight');
+                    container.dataset.subjectId = subjectId;
+                    applyHighlightStyle(container, color, highlightSettings);
+                }
             });
 
             // Thay vì lưu từng từ đơn, ta lưu toàn bộ container (dòng) để chuyển hướng
-            subjectMatches[subjectId].elements = containers;
+            subjectMatches[subjectId].elements = validContainers;
 
             // Cuộn đến kết quả đầu tiên + đánh dấu focus
             if (subjectMatches[subjectId].elements.length > 0) {
@@ -99,14 +122,28 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                 const regexQueries = regexPatterns.map(p => new RegExp(p, 'i'));
 
                 const containers = findSmallestContainers(document.body, regexQueries);
+                const validContainers = [];
+                
                 containers.forEach(container => {
+                    const wasHidden = isElementOrAncestorHidden(container);
+                    if (subject.scanMode === 'normal' && wasHidden) return;
+                    
+                    validContainers.push(container);
+                    let matchedHighlights = 0;
                     regexPatterns.forEach(pattern => {
-                        highlightText(container, pattern, subject.color, subject.subjectId, highlightSettings, { count: 0, limit: 1 });
+                        const matches = highlightText(container, pattern, subject.color, subject.subjectId, highlightSettings, { count: 0, limit: 1 });
+                        matchedHighlights += matches.length;
                     });
+                    
+                    if (matchedHighlights === 0) {
+                        container.classList.add('vnu-fallback-highlight');
+                        container.dataset.subjectId = subject.subjectId;
+                        applyHighlightStyle(container, subject.color, highlightSettings);
+                    }
                 });
                 
-                subjectMatches[subject.subjectId].elements = containers;
-                counts[subject.subjectId] = containers.length;
+                subjectMatches[subject.subjectId].elements = validContainers;
+                counts[subject.subjectId] = validContainers.length;
                 
                 // Đánh dấu focus cho kết quả đầu tiên của mỗi subject
                 if (subjectMatches[subject.subjectId].elements.length > 0) {
@@ -125,16 +162,14 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         else if (request.action === "BLINK_HIGHLIGHT") {
             const { subjectId, isBlinking } = request;
             const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subjectId}"]`);
-            if (marks.length > 0) {
-                marks.forEach(mark => {
-                    if (isBlinking) {
-                        mark.classList.add('vnu-blink');
-                    } else {
-                        mark.classList.remove('vnu-blink');
-                    }
-                });
-                sendResponse({ success: true });
-            }
+            marks.forEach(mark => {
+                if (isBlinking) {
+                    mark.classList.add('vnu-blink');
+                } else {
+                    mark.classList.remove('vnu-blink');
+                }
+            });
+            sendResponse({ success: true });
         }
         else if (request.action === "NAVIGATE") {
             const { subjectId, direction } = request;
@@ -157,8 +192,173 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
             sendResponse({ 
                 success: true,
                 currentIndex: matchData ? matchData.currentIndex : 0,
-                totalCount: matchData ? matchData.elements.length : 0
+                totalCount: matchData ? matchData.elements.length : 0,
+                isCurrentHidden: matchData && matchData.hiddenFlags ? (matchData.hiddenFlags[matchData.currentIndex] || false) : false
             });
+        }
+        else if (request.action === "DEEP_SEARCH") {
+            const { subjectId, queries, color, highlightSettings, scanMode } = request;
+            
+            removeOldHighlights(subjectId);
+            restoreHiddenElements();
+            
+            subjectMatches[subjectId] = { currentIndex: 0, elements: [], hiddenFlags: [] };
+
+            if (!queries || queries.length === 0) {
+                sendResponse({ success: true, count: 0, hiddenCount: 0, currentIndex: 0 });
+                return;
+            }
+
+            const regexPatterns = queries.map(q => {
+                const norm = normalizeVn(q).trim();
+                return escapeRegExp(norm).replace(/\s+/g, '\\s+');
+            });
+            const regexQueries = regexPatterns.map(p => new RegExp(p, 'i'));
+
+            // Dùng deep search thay vì findSmallestContainers
+            const containers = deepFindContainers(document.body, regexQueries);
+            
+            let hiddenCount = 0;
+            const hiddenFlags = [];
+            const validContainers = [];
+            
+            containers.forEach(container => {
+                // Kiểm tra phần tử có đang bị ẩn không
+                const wasHidden = isElementOrAncestorHidden(container);
+                
+                if (scanMode === 'normal' && wasHidden) return;
+
+                hiddenFlags.push(wasHidden);
+                validContainers.push(container);
+                
+                if (wasHidden) {
+                    forceRevealElement(container);
+                    addHiddenBadge(container);
+                    container.classList.add('vnu-deep-reveal-outline');
+                    hiddenCount++;
+                }
+                
+                let matchedHighlights = 0;
+                regexPatterns.forEach(pattern => {
+                    const matches = highlightText(container, pattern, color, subjectId, highlightSettings, { count: 0, limit: 1 });
+                    matchedHighlights += matches.length;
+                });
+                
+                if (matchedHighlights === 0) {
+                    container.classList.add('vnu-fallback-highlight');
+                    container.dataset.subjectId = subjectId;
+                    applyHighlightStyle(container, color, highlightSettings);
+                }
+            });
+
+            subjectMatches[subjectId].elements = validContainers;
+            subjectMatches[subjectId].hiddenFlags = hiddenFlags;
+
+            if (subjectMatches[subjectId].elements.length > 0) {
+                setFocusHighlight(subjectId, 0);
+                subjectMatches[subjectId].elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            if (request.isBlinking) {
+                const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subjectId}"]`);
+                marks.forEach(mark => mark.classList.add('vnu-blink'));
+            }
+            
+            sendResponse({ 
+                success: true, 
+                count: subjectMatches[subjectId].elements.length,
+                hiddenCount: hiddenCount,
+                currentIndex: 0,
+                isCurrentHidden: hiddenFlags.length > 0 ? hiddenFlags[0] : false
+            });
+        }
+        else if (request.action === "SCAN_ALL") {
+            const { subjects, highlightSettings } = request;
+            
+            removeOldHighlights();
+            restoreHiddenElements();
+            
+            const counts = {};
+            const hiddenCounts = {};
+            const firstHiddenFlags = {};
+            
+            subjects.forEach(subject => {
+                subjectMatches[subject.subjectId] = { currentIndex: 0, elements: [] };
+                
+                if (!subject.queries || subject.queries.length === 0) {
+                    counts[subject.subjectId] = 0;
+                    hiddenCounts[subject.subjectId] = 0;
+                    firstHiddenFlags[subject.subjectId] = false;
+                    return;
+                }
+
+                const regexPatterns = subject.queries.map(q => {
+                    const norm = normalizeVn(q).trim();
+                    return escapeRegExp(norm).replace(/\s+/g, '\\s+');
+                });
+                const regexQueries = regexPatterns.map(p => new RegExp(p, 'i'));
+
+                const containers = (subject.scanMode === 'deep' || subject.scanMode === 'both') 
+                    ? deepFindContainers(document.body, regexQueries)
+                    : findSmallestContainers(document.body, regexQueries);
+                
+                let hiddenCount = 0;
+                const hiddenFlags = [];
+                const validContainers = [];
+                
+                containers.forEach(container => {
+                    const wasHidden = isElementOrAncestorHidden(container);
+                    
+                    if (subject.scanMode === 'normal' && wasHidden) return;
+                    
+                    hiddenFlags.push(wasHidden);
+                    validContainers.push(container);
+                    
+                    if (wasHidden) {
+                        forceRevealElement(container);
+                        addHiddenBadge(container);
+                        container.classList.add('vnu-deep-reveal-outline');
+                        hiddenCount++;
+                    }
+                    
+                    let matchedHighlights = 0;
+                    regexPatterns.forEach(pattern => {
+                        const matches = highlightText(container, pattern, subject.color, subject.subjectId, highlightSettings, { count: 0, limit: 1 });
+                        matchedHighlights += matches.length;
+                    });
+                    
+                    if (matchedHighlights === 0) {
+                        container.classList.add('vnu-fallback-highlight');
+                        container.dataset.subjectId = subject.subjectId;
+                        applyHighlightStyle(container, subject.color, highlightSettings);
+                    }
+                });
+                
+                subjectMatches[subject.subjectId].elements = validContainers;
+                subjectMatches[subject.subjectId].hiddenFlags = hiddenFlags;
+                counts[subject.subjectId] = validContainers.length;
+                hiddenCounts[subject.subjectId] = hiddenCount;
+                firstHiddenFlags[subject.subjectId] = hiddenFlags.length > 0 ? hiddenFlags[0] : false;
+                
+                if (subjectMatches[subject.subjectId].elements.length > 0) {
+                    setFocusHighlight(subject.subjectId, 0);
+                }
+
+                if (subject.isBlinking) {
+                    const marks = document.querySelectorAll(`mark.vnu-extension-highlight[data-subject-id="${subject.subjectId}"]`);
+                    marks.forEach(mark => mark.classList.add('vnu-blink'));
+                }
+            });
+
+            sendResponse({ success: true, counts: counts, hiddenCounts: hiddenCounts, firstHiddenFlags: firstHiddenFlags });
+        }
+        else if (request.action === "RESTORE_HIDDEN") {
+            restoreHiddenElements();
+            // Xóa outline class
+            document.querySelectorAll('.vnu-deep-reveal-outline').forEach(el => {
+                el.classList.remove('vnu-deep-reveal-outline');
+            });
+            sendResponse({ success: true });
         }
         else if (request.action === "INJECT_PANEL") {
             injectFloatingPanel();
@@ -173,10 +373,21 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         if (!matchData || !matchData.elements[index]) return;
         
         const el = matchData.elements[index];
+        const isHidden = matchData.hiddenFlags && matchData.hiddenFlags[index];
+        
         el.classList.add('vnu-highlight-focus');
-        el.style.outline = '3px dashed #ef4444'; // Đổi sang viền đứt nét bao quanh cả dòng
-        el.style.outlineOffset = '2px';
-        el.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.4)';
+        
+        if (isHidden) {
+            // Kết quả ẩn → viền tím nét đứt + glow tím
+            el.style.outline = '3px dashed #7c3aed';
+            el.style.outlineOffset = '2px';
+            el.style.boxShadow = '0 0 20px rgba(124, 58, 237, 0.4)';
+        } else {
+            // Kết quả thường → viền đỏ nét đứt (giữ nguyên)
+            el.style.outline = '3px dashed #ef4444';
+            el.style.outlineOffset = '2px';
+            el.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.4)';
+        }
     }
 
     function clearFocusHighlight(subjectId) {
@@ -211,6 +422,20 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                 parent.replaceChild(document.createTextNode(mark.textContent), mark);
                 parent.normalize();
             }
+        });
+
+        const fallbackSelector = subjectId 
+            ? `.vnu-fallback-highlight[data-subject-id="${subjectId}"]`
+            : `.vnu-fallback-highlight`;
+        document.querySelectorAll(fallbackSelector).forEach(el => {
+            el.classList.remove('vnu-fallback-highlight');
+            delete el.dataset.subjectId;
+            el.style.backgroundColor = '';
+            el.style.color = '';
+            el.style.textDecoration = '';
+            el.style.borderBottom = '';
+            el.style.fontWeight = '';
+            el.style.textShadow = '';
         });
     }
 
@@ -379,6 +604,7 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
     let initialTop, initialLeft;
 
     window.addEventListener('message', (event) => {
+        if (event.origin !== window.location.origin) return;
         if (event.data && typeof event.data === 'object') {
             const { action, iframeX, iframeY, isPinned } = event.data;
             
@@ -460,18 +686,247 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
         }
 
         if (!childHasAll) {
-            // Khóa chặn: Không bao giờ chấp nhận các thẻ mang tính chất "bọc nhiều dòng" làm kết quả
-            // Nếu các từ khóa nằm rải rác ở các dòng khác nhau (VD: "học" ở dòng 1, "máy" ở dòng 2)
-            // thì thùng chứa chung của chúng sẽ là TBODY hoặc TABLE. Ta phải loại bỏ ngay lập tức!
             const invalidMultiRowTags = ['TBODY', 'TABLE', 'THEAD', 'TFOOT', 'UL', 'OL', 'DL', 'BODY', 'MAIN', 'ARTICLE', 'SECTION', 'FORM', 'ASIDE', 'NAV'];
             if (invalidMultiRowTags.includes(node.tagName)) {
                 return containers;
             }
 
-            // Heuristic quan trọng: Chỉ chấp nhận các container có kích thước nhỏ (như 1 dòng)
-            // Nếu là thẻ TR (dòng của bảng) thì luôn chấp nhận. Nếu là thẻ khác, giới hạn 800 ký tự.
             if (node.tagName === 'TR' || node.tagName === 'LI' || node.textContent.trim().length <= 800) {
                 containers.push(node);
+            }
+        }
+        
+        return containers;
+    }
+
+    // ======= DEEP SEARCH ENGINE =======
+    // Lưu trữ các phần tử đã bị force reveal để phục hồi sau
+    const revealedElements = new Map();
+
+    // Kiểm tra phần tử có đang bị ẩn không
+    function isElementHidden(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+        if (el.tagName === 'DETAILS' && !el.open) return true;
+        try {
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none') return true;
+            if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+            if (style.contentVisibility === 'hidden') return true;
+            if (parseFloat(style.opacity) === 0) return true;
+            if (style.clip === 'rect(0px, 0px, 0px, 0px)') return true;
+            if (style.clipPath === 'inset(100%)') return true;
+            if (style.transform && style.transform !== 'none') {
+                const matrixMatch = style.transform.match(/matrix\((.+)\)/);
+                if (matrixMatch) {
+                    const parts = matrixMatch[1].split(',').map(p => parseFloat(p.trim()));
+                    if (parts.length === 6) {
+                        // parts[0] is scaleX, parts[3] is scaleY
+                        if (Math.abs(parts[0]) < 0.001 || Math.abs(parts[3]) < 0.001) return true;
+                        // parts[4] is translateX, parts[5] is translateY
+                        if (parts[4] < -9000 || parts[5] < -9000) return true;
+                    }
+                }
+            }
+            // Kiểm tra kích thước = 0 (khi overflow bị hidden)
+            if ((el.offsetWidth === 0 || el.offsetHeight === 0) && style.overflow === 'hidden') return true;
+            // Kiểm tra css height/maxHeight = 0
+            if ((style.height === '0px' || style.maxHeight === '0px') && style.overflow === 'hidden') return true;
+            // Kiểm tra nằm ngoài viewport cực xa (trick ẩn bằng position) hoặc off-canvas
+            const rect = el.getBoundingClientRect();
+            if (rect.right < -9000 || rect.bottom < -9000) return true;
+            
+            if (style.position === 'fixed' || style.position === 'absolute') {
+                // Nếu element fixed/absolute bị đẩy hoàn toàn ra khỏi màn hình (như Canvas LMS drawer)
+                if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) {
+                    return true;
+                }
+            }
+        } catch (e) {
+            return false;
+        }
+        return false;
+    }
+
+    // Kiểm tra phần tử hoặc bất kỳ ancestor nào bị ẩn
+    function isElementOrAncestorHidden(el) {
+        let current = el;
+        while (current && current !== document.body && current !== document.documentElement) {
+            if (isElementHidden(current)) return true;
+            current = current.parentElement;
+        }
+        return false;
+    }
+
+    // Force hiển thị phần tử và tất cả ancestor bị ẩn
+    function forceRevealElement(el) {
+        let current = el;
+        const revealed = [];
+        while (current && current !== document.body && current !== document.documentElement) {
+            if (isElementHidden(current)) {
+                // Lưu CSS gốc
+                const originalStyles = {
+                    display: current.style.display,
+                    visibility: current.style.visibility,
+                    contentVisibility: current.style.contentVisibility,
+                    opacity: current.style.opacity,
+                    clip: current.style.clip,
+                    clipPath: current.style.clipPath,
+                    overflow: current.style.overflow,
+                    height: current.style.height,
+                    maxHeight: current.style.maxHeight,
+                    width: current.style.width,
+                    maxWidth: current.style.maxWidth,
+                    transform: current.style.transform,
+                    position: current.style.position,
+                    left: current.style.left,
+                    top: current.style.top,
+                    right: current.style.right,
+                    bottom: current.style.bottom,
+                    margin: current.style.margin,
+                    zIndex: current.style.zIndex
+                };
+                
+                if (!revealedElements.has(current)) {
+                    revealedElements.set(current, originalStyles);
+                }
+
+                // Nếu là thẻ details thì mở ra
+                if (current.tagName === 'DETAILS' && !current.open) {
+                    current.open = true;
+                    // Ta cũng có thể lưu trạng thái open ban đầu vào map nếu muốn hoàn hảo hơn, 
+                    // nhưng với CSS thì tạm thời cứ mở ra là được.
+                    originalStyles.wasDetailsClosed = true;
+                }
+
+                // Force hiển thị
+                const computed = window.getComputedStyle(current);
+                if (computed.display === 'none') {
+                    current.style.setProperty('display', 'block', 'important');
+                }
+                if (computed.visibility === 'hidden' || computed.visibility === 'collapse') {
+                    current.style.setProperty('visibility', 'visible', 'important');
+                }
+                if (computed.contentVisibility === 'hidden') {
+                    current.style.setProperty('content-visibility', 'visible', 'important');
+                }
+                if (parseFloat(computed.opacity) === 0) {
+                    current.style.setProperty('opacity', '1', 'important');
+                }
+                if (computed.clip === 'rect(0px, 0px, 0px, 0px)') {
+                    current.style.setProperty('clip', 'auto', 'important');
+                }
+                if (computed.clipPath === 'inset(100%)') {
+                    current.style.setProperty('clip-path', 'none', 'important');
+                }
+                if (computed.transform && computed.transform !== 'none') {
+                    current.style.setProperty('transform', 'none', 'important');
+                }
+                if (computed.overflow === 'hidden') {
+                    if (current.offsetWidth === 0 || computed.width === '0px') current.style.setProperty('width', 'auto', 'important');
+                    if (current.offsetHeight === 0 || computed.height === '0px') current.style.setProperty('height', 'auto', 'important');
+                    if (computed.maxHeight === '0px') current.style.setProperty('max-height', 'none', 'important');
+                    if (computed.maxWidth === '0px') current.style.setProperty('max-width', 'none', 'important');
+                    current.style.setProperty('overflow', 'visible', 'important');
+                }
+                // Fix position ẩn ngoài viewport
+                const rect = current.getBoundingClientRect();
+                if (rect.right < -9000 || rect.bottom < -9000) {
+                    current.style.setProperty('position', 'static', 'important');
+                }
+                
+                // Nếu bị đẩy hoàn toàn ra ngoài (off-canvas)
+                if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) {
+                    current.style.setProperty('left', '0', 'important');
+                    current.style.setProperty('top', '0', 'important');
+                    current.style.setProperty('right', 'auto', 'important');
+                    current.style.setProperty('bottom', 'auto', 'important');
+                    current.style.setProperty('margin', '0', 'important');
+                    current.style.setProperty('transform', 'none', 'important');
+                    current.style.setProperty('z-index', '999999', 'important');
+                }
+
+                revealed.push(current);
+            }
+            current = current.parentElement;
+        }
+        return revealed;
+    }
+
+    // Phục hồi tất cả phần tử đã bị force reveal
+    function restoreHiddenElements() {
+        revealedElements.forEach((originalStyles, el) => {
+            try {
+                Object.keys(originalStyles).forEach(prop => {
+                    if (prop === 'wasDetailsClosed') {
+                        el.open = false;
+                    } else {
+                        el.style[prop] = originalStyles[prop];
+                    }
+                });
+                // Xóa badge ẩn nếu có
+                const badges = el.querySelectorAll('.vnu-hidden-badge');
+                badges.forEach(b => b.remove());
+            } catch (e) {
+                // Element có thể đã bị xóa khỏi DOM
+            }
+        });
+        revealedElements.clear();
+    }
+
+    // Thêm badge "🔍 Ẩn" cho container chứa kết quả ẩn
+    function addHiddenBadge(container) {
+        if (container.querySelector('.vnu-hidden-badge')) return;
+        const badge = document.createElement('span');
+        badge.className = 'vnu-hidden-badge';
+        badge.textContent = '🔍 Ẩn';
+        badge.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            background: linear-gradient(135deg, #7c3aed, #ec4899);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 6px;
+            vertical-align: middle;
+            box-shadow: 0 2px 8px rgba(124, 58, 237, 0.4);
+            animation: vnu-badge-pop 0.3s ease;
+            pointer-events: none;
+        `;
+        container.insertBefore(badge, container.firstChild);
+    }
+
+    // Deep Search: Tìm containers kể cả phần tử ẩn + Shadow DOM + iframes
+    function deepFindContainers(rootNode, regexQueries, depth = 0) {
+        const containers = [];
+        if (!rootNode || depth > 20) return containers; // Giới hạn depth cho iframe/shadow root nesting
+
+        // 1. Tìm kết quả trong Light DOM của rootNode hiện tại
+        // Đảm bảo Quét Sâu tìm được TẤT CẢ những gì Quét Thường tìm được
+        containers.push(...findSmallestContainers(rootNode, regexQueries));
+        
+        // 2. Tìm tất cả shadowRoot và iframes bên trong rootNode này để đào sâu thêm
+        if (rootNode.querySelectorAll) {
+            // Bao gồm cả rootNode và các descendants (nhưng querySelectorAll không xuyên qua shadow root)
+            const allElements = [rootNode, ...rootNode.querySelectorAll('*')];
+            for (let el of allElements) {
+                // Duyệt Shadow DOM
+                if (el.shadowRoot) {
+                    containers.push(...deepFindContainers(el.shadowRoot, regexQueries, depth + 1));
+                }
+                // Duyệt Iframe
+                if (el.tagName === 'IFRAME') {
+                    try {
+                        const iframeDoc = el.contentDocument || el.contentWindow?.document;
+                        if (iframeDoc && iframeDoc.body) {
+                            containers.push(...deepFindContainers(iframeDoc.body, regexQueries, depth + 1));
+                        }
+                    } catch (e) {
+                        // Bỏ qua lỗi cross-origin iframe
+                    }
+                }
             }
         }
         
@@ -537,13 +992,13 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
             if (child.nodeType === Node.TEXT_NODE) {
                 const originalText = child.nodeValue;
                 if (originalText.trim().length > 0) {
-                    const normText = normalizeVn(originalText);
+                    const { text: normText, map: indexMap } = normalizeWithMap(originalText);
                     
                     regex.lastIndex = 0;
                     if (!regex.test(normText)) continue;
                     
                     const fragment = document.createDocumentFragment();
-                    let lastIdx = 0;
+                    let lastOrigIdx = 0;
                     
                     regex.lastIndex = 0; // Reset lại sau regex.test()
                     let match;
@@ -551,7 +1006,11 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                     while ((match = regex.exec(normText)) !== null) {
                         if (matchState && matchState.count >= matchState.limit) break;
 
-                        const before = originalText.substring(lastIdx, match.index);
+                        // Map index từ text chuẩn hóa về text gốc
+                        const origMatchStart = indexMap[match.index];
+                        const origMatchEnd = indexMap[match.index + match[0].length];
+
+                        const before = originalText.substring(lastOrigIdx, origMatchStart);
                         if (before.length > 0) {
                             fragment.appendChild(document.createTextNode(before));
                         }
@@ -563,8 +1022,8 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                         mark.style.padding = '0 2px';
                         mark.style.transition = 'all 0.2s ease';
                         
-                        // Lấy text gốc để wrap, dựa trên index đã match trên text chuẩn hóa
-                        mark.textContent = originalText.substring(match.index, match.index + match[0].length);
+                        // Lấy text gốc để wrap, dựa trên index map chính xác
+                        mark.textContent = originalText.substring(origMatchStart, origMatchEnd);
                         
                         // Feature #14: Áp dụng highlight style
                         applyHighlightStyle(mark, color, highlightSettings);
@@ -574,15 +1033,15 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
 
                         if (matchState) matchState.count++;
 
-                        lastIdx = match.index + match[0].length;
+                        lastOrigIdx = origMatchEnd;
                     }
 
-                    const after = originalText.substring(lastIdx);
+                    const after = originalText.substring(lastOrigIdx);
                     if (after.length > 0) {
                         fragment.appendChild(document.createTextNode(after));
                     }
 
-                    if (lastIdx > 0) {
+                    if (lastOrigIdx > 0) {
                         child.parentNode.replaceChild(fragment, child);
                     }
                 }
@@ -600,6 +1059,35 @@ if (typeof window.vnuExtensionLoaded === 'undefined') {
                   .normalize("NFD")
                   .replace(/[\u0300-\u036f]/g, "")
                   .replace(/đ/g, "d");
+    }
+
+    // Chuẩn hóa text và tạo bản đồ index: normIndex → origIndex
+    // Dùng để map vị trí match từ text chuẩn hóa về text gốc (hỗ trợ dấu tiếng Việt)
+    function normalizeWithMap(str) {
+        if (!str) return { text: '', map: [0] };
+        const lower = str.toLowerCase();
+        let normalized = '';
+        const map = []; // map[normalizedIndex] = originalIndex
+
+        for (let i = 0; i < lower.length; i++) {
+            const ch = lower[i];
+            if (ch === 'đ') {
+                map.push(i);
+                normalized += 'd';
+            } else {
+                const decomposed = ch.normalize("NFD");
+                for (let j = 0; j < decomposed.length; j++) {
+                    const code = decomposed.charCodeAt(j);
+                    if (code >= 0x0300 && code <= 0x036f) {
+                        continue; // Bỏ qua combining mark
+                    }
+                    map.push(i);
+                    normalized += decomposed[j];
+                }
+            }
+        }
+        map.push(str.length); // Sentinel cho substring ở cuối
+        return { text: normalized, map };
     }
 
     function escapeRegExp(string) {

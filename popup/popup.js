@@ -21,6 +21,7 @@ let currentLang = 'vi';
 let translations = {};
 let currentStreak = 1;
 let lastActiveDate = null;
+let notifications = []; // Lịch sử thông báo
 
 // Lưu trữ match count cho mỗi subject (key: subjectId)
 const matchCounts = {};
@@ -36,8 +37,17 @@ const btnResetSettings = document.getElementById('btnResetSettings');
 const subjectList = document.getElementById('subjectList');
 const btnAdd = document.getElementById('btnAdd');
 const btnClearAll = document.getElementById('btnClearAll');
+const btnShowGuide = document.getElementById('btnShowGuide');
 const btnImportCsv = document.getElementById('btnImportCsv');
 const csvFileInput = document.getElementById('csvFileInput');
+
+// UI Elements cho Thông báo
+const btnNotifications = document.getElementById('btnNotifications');
+const notifPanel = document.getElementById('notifPanel');
+const notifBadge = document.getElementById('notifBadge');
+const notifList = document.getElementById('notifList');
+const btnClearNotifs = document.getElementById('btnClearNotifs');
+
 const btnDownloadTemplate = document.getElementById('btnDownloadTemplate');
 const btnScanAll = document.getElementById('btnScanAll');
 
@@ -50,16 +60,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderSubjects();
     initHighlightSettingsUI();
     initExtraFeatures();
+    initNotifications();
     checkOnboarding();
 });
 
 // Load dữ liệu từ storage
 async function loadData() {
-    const result = await chrome.storage.local.get(['subjects', 'labels', 'isPinned', 'highlightSettings', 'onboardingDone', 'lang', 'currentStreak', 'lastActiveDate']);
+    const result = await chrome.storage.local.get(['subjects', 'labels', 'isPinned', 'highlightSettings', 'onboardingDone', 'lang', 'currentStreak', 'lastActiveDate', 'notifications']);
     
     if (result.lang) currentLang = result.lang;
     if (result.currentStreak) currentStreak = result.currentStreak;
     if (result.lastActiveDate) lastActiveDate = result.lastActiveDate;
+    if (result.notifications) notifications = result.notifications;
     if (result.labels) {
         if (Array.isArray(result.labels)) {
             labels = result.labels;
@@ -93,7 +105,7 @@ async function loadData() {
             };
         });
     } else {
-        subjects = [{ id: Date.now(), color: '#ffff00', isActive: true, tag: '', fields: {} }];
+        subjects = [{ id: crypto.randomUUID(), color: '#ffff00', isActive: true, tag: '', fields: {} }];
     }
     
     if (result.isPinned) isPinned = result.isPinned;
@@ -114,8 +126,9 @@ function renderLabels() {
             const div = document.createElement('div');
             div.className = 'form-group';
             div.style.marginBottom = '10px';
+            const escapedTitle = String(label.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             div.innerHTML = `
-                <input type="text" class="label-title-input" data-index="${index}" value="${label.title}" placeholder="Tên trường tìm kiếm" style="flex: 1; margin-right: 8px;">
+                <input type="text" class="label-title-input" data-index="${index}" value="${escapedTitle}" placeholder="Tên trường tìm kiếm" style="flex: 1; margin-right: 8px;">
                 ${labels.length > 1 ? `<button class="btn btn-icon btn-delete-label" data-index="${index}" title="Xóa trường này" style="color: var(--danger-color); border-color: rgba(244, 63, 94, 0.3);">❌</button>` : ''}
             `;
             container.appendChild(div);
@@ -141,21 +154,42 @@ function renderLabels() {
 }
 
 // ======= Feature #6: Cập nhật match counter cho 1 row =======
-function updateMatchCounter(subjectId, current, total) {
-    matchCounts[subjectId] = { current, total };
+function updateMatchCounter(subjectId, current, total, hiddenCount = 0, isCurrentHidden = null) {
+    matchCounts[subjectId] = { current, total, hiddenCount, isCurrentHidden };
     const rows = subjectList.querySelectorAll('.subject-row');
     rows.forEach((row, idx) => {
-        if (subjects[idx] && subjects[idx].id === subjectId) {
+        if (subjects[idx] && String(subjects[idx].id) === String(subjectId)) {
             const counter = row.querySelector('.match-counter');
             if (counter) {
                 if (total > 0) {
-                    counter.textContent = `${current + 1}/${total}`;
+                    let prefix = '';
+                    if (isCurrentHidden === true) {
+                        prefix = '🔍 ';
+                        counter.classList.add('current-hidden');
+                        counter.classList.remove('current-visible');
+                    } else if (isCurrentHidden === false && hiddenCount > 0) {
+                        prefix = '✅ ';
+                        counter.classList.add('current-visible');
+                        counter.classList.remove('current-hidden');
+                    } else {
+                        counter.classList.remove('current-hidden', 'current-visible');
+                    }
+                    
+                    let text = `${prefix}${current + 1}/${total}`;
+                    if (hiddenCount > 0) {
+                        text += ` (${hiddenCount} ẩn)`;
+                        counter.classList.add('has-hidden');
+                    } else {
+                        counter.classList.remove('has-hidden');
+                    }
+                    counter.textContent = text;
                     counter.style.display = 'inline-flex';
                     counter.classList.remove('no-results');
                 } else {
                     counter.textContent = '0';
                     counter.style.display = 'inline-flex';
                     counter.classList.add('no-results');
+                    counter.classList.remove('has-hidden', 'current-hidden', 'current-visible');
                 }
             }
         }
@@ -296,20 +330,24 @@ function renderSubjects() {
         toggleActive.checked = isActive;
         if (!isActive) {
             row.classList.add('disabled');
+            inputsGrid.querySelectorAll('input').forEach(input => input.disabled = true);
         }
 
         toggleActive.addEventListener('change', (e) => {
             subject.isActive = e.target.checked;
             if (subject.isActive) {
                 row.classList.remove('disabled');
+                inputsGrid.querySelectorAll('input').forEach(input => input.disabled = false);
                 performSearch(subject);
             } else {
                 row.classList.add('disabled');
+                inputsGrid.querySelectorAll('input').forEach(input => input.disabled = true);
                 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                     if (tabs[0]) {
                         chrome.tabs.sendMessage(tabs[0].id, {
-                            action: "HIGHLIGHT",
+                            action: subject.scanMode === 'deep' ? "DEEP_SEARCH" : "HIGHLIGHT",
                             subjectId: subject.id,
+                            scanMode: subject.scanMode || 'normal',
                             queries: [],
                             color: subject.color,
                             highlightSettings: highlightSettings
@@ -329,6 +367,25 @@ function renderSubjects() {
             tagSelect.addEventListener('change', (e) => {
                 subject.tag = e.target.value;
                 tagSelect.className = 'tag-select' + (subject.tag ? ` tag-${subject.tag}` : '');
+                saveData();
+            });
+        }
+
+        // Feature: Scan Mode Selection
+        const modeSelect = row.querySelector('.mode-select');
+        if (modeSelect) {
+            modeSelect.value = subject.scanMode && subject.scanMode !== 'both' ? subject.scanMode : 'normal';
+            modeSelect.className = 'mode-select mode-' + modeSelect.value;
+            modeSelect.addEventListener('change', (e) => {
+                subject.scanMode = e.target.value;
+                modeSelect.className = 'mode-select mode-' + subject.scanMode;
+                
+                // Reset kết quả khi chuyển chế độ
+                if (matchCounts[subject.id]) {
+                    delete matchCounts[subject.id];
+                    updateMatchCounter(subject.id, 0, 0);
+                }
+                
                 saveData();
             });
         }
@@ -365,8 +422,9 @@ function renderSubjects() {
                 const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
                 if (tabs[0]) {
                     chrome.tabs.sendMessage(tabs[0].id, {
-                        action: "HIGHLIGHT",
+                        action: subject.scanMode === 'deep' ? "DEEP_SEARCH" : "HIGHLIGHT",
                         subjectId: subject.id,
+                        scanMode: subject.scanMode,
                         queries: [],
                         color: subject.color,
                         highlightSettings: highlightSettings
@@ -449,6 +507,11 @@ btnAdd.addEventListener('click', () => {
     }, 50);
 });
 
+// Hiển thị lại hướng dẫn
+btnShowGuide?.addEventListener('click', () => {
+    startOnboarding();
+});
+
 // Xóa tất cả
 btnClearAll.addEventListener('click', async () => {
     if (confirm("Bạn chắc chưa? Hành động này sẽ xóa tất cả các môn học trong danh sách.")) {
@@ -460,7 +523,7 @@ btnClearAll.addEventListener('click', async () => {
         try {
             const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, { action: "HIGHLIGHT_ALL", subjects: [] }).catch(e => console.error(e));
+                chrome.tabs.sendMessage(tabs[0].id, { action: "HIGHLIGHT_ALL", subjects: [], highlightSettings: highlightSettings }).catch(e => console.error(e));
             }
         } catch(err) { console.error(err); }
 
@@ -480,12 +543,12 @@ if (toggleAll) {
         renderSubjects();
         
         if (isChecked) {
-            btnScanAll.click(); // Tự động quét lại
+            performScanAll(); // Tự động quét lại
         } else {
             // Xóa tất cả highlight
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0]) {
-                    chrome.tabs.sendMessage(tabs[0].id, { action: "HIGHLIGHT_ALL", subjects: [] }).catch(e => console.error(e));
+                    chrome.tabs.sendMessage(tabs[0].id, { action: "HIGHLIGHT_ALL", subjects: [], highlightSettings: highlightSettings }).catch(e => console.error(e));
                 }
             });
             Object.keys(matchCounts).forEach(id => updateMatchCounter(parseInt(id), 0, 0));
@@ -544,7 +607,7 @@ btnResetSettings.addEventListener('click', () => {
 const btnAddLabel = document.getElementById('btnAddLabel');
 if (btnAddLabel) {
     btnAddLabel.addEventListener('click', () => {
-        labels.push({ id: 'custom_' + Date.now(), title: 'Trường mới' });
+        labels.push({ id: 'custom_' + crypto.randomUUID(), title: 'Trường mới' });
         renderLabels();
     });
 }
@@ -609,7 +672,7 @@ function parseCSV(text) {
         
         const row = matches.map(m => m.replace(/^"|"$/g, '').trim());
         const subject = {
-            id: Date.now() + i,
+            id: crypto.randomUUID(),
             fields: {},
             isActive: true
         };
@@ -644,8 +707,9 @@ async function performSearch(subject) {
     try {
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['scripts/content.js'] });
         const response = await chrome.tabs.sendMessage(tab.id, {
-            action: "HIGHLIGHT",
+            action: subject.scanMode === 'deep' ? "DEEP_SEARCH" : "HIGHLIGHT",
             subjectId: subject.id,
+            scanMode: subject.scanMode || 'normal',
             queries: queries,
             color: subject.color,
             isBlinking: subject.isBlinking,
@@ -653,60 +717,172 @@ async function performSearch(subject) {
         });
         if (response && response.success) {
             updateMatchCounter(subject.id, response.currentIndex || 0, response.count || 0);
+            // Hiển thị hướng dẫn nếu không tìm thấy kết quả
+            if ((response.count || 0) === 0 && queries.length > 0) {
+                showScanGuidance(1, 1);
+            }
         }
     } catch (err) {
         console.error(err);
     }
 }
 
-// Logic Nút Quét tất cả
-btnScanAll.addEventListener('click', async () => {
-    if (subjects.length === 0) {
-        alert("Danh sách môn học đang trống.");
+// ======= Scan Results Summary =======
+function updateScanResultsSummary(mode, totalCount, visibleCount, hiddenCount) {
+    const summary = document.getElementById('scanResultsSummary');
+    const modeEl = document.getElementById('scanResultsMode');
+    const totalEl = document.getElementById('scanResultsTotal');
+    const visibleEl = document.getElementById('scanResultsVisible');
+    const hiddenEl = document.getElementById('scanResultsHidden');
+    
+    if (!summary) return;
+
+    // Toggle active state on buttons
+    document.querySelector('.scan-mode-normal')?.classList.toggle('active', mode === 'normal');
+    document.querySelector('.scan-mode-deep')?.classList.toggle('active', mode === 'deep');
+
+    summary.style.display = 'flex';
+    summary.className = `scan-results-summary mode-${mode}`;
+    
+    if (mode === 'deep') {
+        modeEl.textContent = '🔍 Quét sâu';
+    } else if (mode === 'mixed') {
+        modeEl.textContent = '✨ Quét tất cả';
+    } else {
+        modeEl.textContent = '⚡ Quét thường';
+    }
+    
+    totalEl.textContent = `${totalCount} kết quả`;
+    visibleEl.innerHTML = `<span class="scan-dot scan-dot-visible"></span> ${visibleCount} hiển thị`;
+    
+    if (hiddenCount > 0) {
+        hiddenEl.style.display = 'flex';
+        hiddenEl.innerHTML = `<span class="scan-dot scan-dot-hidden"></span> ${hiddenCount} ẩn`;
+    } else {
+        hiddenEl.style.display = 'none';
+    }
+
+    // Re-trigger animation
+    summary.style.animation = 'none';
+    void summary.offsetWidth;
+    summary.style.animation = '';
+}
+
+
+
+// Toast notification cho Deep Search
+function showDeepSearchToast(message) {
+    // Xóa toast cũ nếu có
+    const oldToast = document.querySelector('.vnu-deep-toast');
+    if (oldToast) oldToast.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'vnu-deep-toast';
+    toast.innerHTML = '';
+    const span = document.createElement('span');
+    span.style.fontSize = '14px';
+    span.textContent = message;
+    toast.appendChild(span);
+    document.body.appendChild(toast);
+
+    // Auto remove sau 4 giây
+    setTimeout(() => {
+        toast.classList.add('fade-out');
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
+
+// ======= Scan Guidance & Notifications =======
+function initNotifications() {
+    btnNotifications.addEventListener('click', (e) => {
+        e.stopPropagation();
+        notifPanel.classList.toggle('hidden');
+        if (!notifPanel.classList.contains('hidden')) {
+            renderNotifications();
+        }
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!notifPanel.contains(e.target) && !btnNotifications.contains(e.target)) {
+            notifPanel.classList.add('hidden');
+        }
+    });
+
+    btnClearNotifs.addEventListener('click', () => {
+        if (confirm(t('notif_clear_confirm'))) {
+            notifications = [];
+            chrome.storage.local.set({ notifications });
+            renderNotifications();
+            updateNotifBadge();
+        }
+    });
+
+    updateNotifBadge();
+}
+
+function updateNotifBadge() {
+    if (notifications.length > 0) {
+        notifBadge.style.display = 'flex';
+        notifBadge.textContent = notifications.length > 9 ? '9+' : notifications.length;
+    } else {
+        notifBadge.style.display = 'none';
+    }
+}
+
+function renderNotifications() {
+    notifList.innerHTML = '';
+    
+    if (notifications.length === 0) {
+        notifList.innerHTML = `<div class="notif-empty">${t('notif_empty')}</div>`;
         return;
     }
 
-    const payload = subjects.filter(s => s.isActive !== false).map(s => {
-        return {
-            subjectId: s.id,
-            color: s.color,
-            isBlinking: s.isBlinking,
-            queries: labels.flatMap(l => {
-                const val = s.fields[l.id];
-                if (!val || val.trim().length === 0) return [];
-                return val.split(',').map(v => v.trim()).filter(v => v.length > 0);
-            })
-        };
-    }).filter(s => s.queries.length > 0);
+    const reversed = [...notifications].reverse(); // Mới nhất lên đầu
+    reversed.forEach(notif => {
+        const item = document.createElement('div');
+        item.className = 'notif-item';
+        
+        const time = new Date(notif.time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        
+        const safeCount = String(notif.zeroCount).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        item.innerHTML = `
+            <span class="notif-time">${time}</span>
+            <div class="notif-msg">
+                <strong>💡 ${t('guidance_title')}</strong><br>
+                ${t('guidance_desc').replace('{count}', safeCount)}
+            </div>
+            <ul class="scan-guidance-tips" style="margin-top: 6px; margin-bottom: 0;">
+                <li>${t('guidance_tip1')}</li>
+                <li>${t('guidance_tip2')}</li>
+                <li>${t('guidance_tip3')}</li>
+            </ul>
+        `;
+        notifList.appendChild(item);
+    });
+}
 
-    if (payload.length === 0) {
-        alert("Các môn học chưa có thông tin hợp lệ để quét.");
-        return;
+function showScanGuidance(zeroCount, totalCount) {
+    if (zeroCount === 0) return;
+
+    // Thêm vào mảng notifications
+    notifications.push({
+        time: Date.now(),
+        zeroCount: zeroCount,
+        totalCount: totalCount
+    });
+
+    // Giữ tối đa 50 thông báo gần nhất
+    if (notifications.length > 50) {
+        notifications = notifications.slice(notifications.length - 50);
     }
 
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) return;
-
-    try {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['scripts/content.js'] });
-        chrome.tabs.sendMessage(tab.id, {
-            action: "HIGHLIGHT_ALL",
-            subjects: payload,
-            highlightSettings: highlightSettings
-        }, (response) => {
-            if (chrome.runtime.lastError) return;
-            if (response && response.success && response.counts) {
-                // Cập nhật counter cho từng subject
-                for (const [sid, count] of Object.entries(response.counts)) {
-                    updateMatchCounter(parseInt(sid) || sid, 0, count);
-                }
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        alert("Không thể quét trên trang này.");
-    }
-});
+    chrome.storage.local.set({ notifications });
+    updateNotifBadge();
+    
+    // Rung chuông hoặc hiệu ứng nhẹ (tùy chọn)
+    btnNotifications.style.animation = 'pulse 0.5s ease 2';
+    setTimeout(() => { btnNotifications.style.animation = ''; }, 1000);
+}
 
 // Logic Điều hướng (Feature #6: nhận response cập nhật counter)
 async function performNavigation(subjectId, direction) {
@@ -721,12 +897,80 @@ async function performNavigation(subjectId, direction) {
             direction: direction
         });
         if (response && response.success) {
-            updateMatchCounter(subjectId, response.currentIndex || 0, response.totalCount || 0);
+            const storedHiddenCount = matchCounts[subjectId] ? matchCounts[subjectId].hiddenCount : 0;
+            updateMatchCounter(subjectId, response.currentIndex || 0, response.totalCount || 0, storedHiddenCount, response.isCurrentHidden ?? null);
         }
     } catch (err) {
         console.error(err);
     }
 }
+
+// --- Logic Quét tất cả (Scan All) ---
+async function performScanAll() {
+    const activeSubjects = subjects.filter(s => s.isActive !== false);
+    if (activeSubjects.length === 0) {
+        alert(t('scan_empty_alert'));
+        return;
+    }
+
+    const subjectsData = activeSubjects.map(subject => {
+        const queries = labels.flatMap(l => {
+            const val = subject.fields[l.id];
+            if (!val || val.trim().length === 0) return [];
+            return val.split(',').map(v => v.trim()).filter(v => v.length > 0);
+        });
+        return {
+            subjectId: subject.id,
+            queries: queries,
+            color: subject.color,
+            scanMode: subject.scanMode || 'normal',
+            isBlinking: subject.isBlinking
+        };
+    }).filter(s => s.queries.length > 0);
+
+    if (subjectsData.length === 0) {
+        alert(t('scan_no_valid_alert'));
+        return;
+    }
+
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+
+    try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['scripts/content.js'] });
+        const response = await chrome.tabs.sendMessage(tab.id, {
+            action: "SCAN_ALL",
+            subjects: subjectsData,
+            highlightSettings: highlightSettings
+        });
+        if (response && response.success) {
+            let totalCount = 0;
+            let totalHidden = 0;
+            Object.keys(response.counts).forEach(id => {
+                const count = response.counts[id];
+                const hiddenCount = response.hiddenCounts[id] || 0;
+                totalCount += count;
+                totalHidden += hiddenCount;
+                updateMatchCounter(id, 0, count, hiddenCount, response.firstHiddenFlags[id] ?? null);
+            });
+            updateScanResultsSummary('mixed', totalCount, totalCount - totalHidden, totalHidden);
+
+            // Hiển thị hướng dẫn nếu có môn không tìm thấy
+            let zeroCount = 0;
+            Object.keys(response.counts).forEach(id => {
+                if (response.counts[id] === 0) zeroCount++;
+            });
+            if (zeroCount > 0) {
+                showScanGuidance(zeroCount, Object.keys(response.counts).length);
+            }
+        }
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+// Click handlers cho nút quét
+btnScanAll.addEventListener('click', () => performScanAll());
 
 // --- Logic Floating Panel (Cửa sổ nổi) & Drag ---
 const btnTogglePin = document.getElementById('btnTogglePin');
@@ -876,9 +1120,10 @@ document.addEventListener('keydown', (e) => {
     // Ctrl+Shift+S → Quét tất cả
     if (e.ctrlKey && e.shiftKey && e.key === 'S') {
         e.preventDefault();
-        btnScanAll.click();
+        performScanAll();
         return;
     }
+
     // Ctrl+Shift+A → Thêm môn học
     if (e.ctrlKey && e.shiftKey && e.key === 'A') {
         e.preventDefault();
@@ -967,6 +1212,7 @@ const ONBOARDING_STEPS = [
     { icon: '📌', titleKey: 'onboarding_step7_title', descKey: 'onboarding_step7_desc' },
     { icon: '⚙️', titleKey: 'onboarding_step8_title', descKey: 'onboarding_step8_desc' },
     { icon: '⌨️', titleKey: 'onboarding_step9_title', descKey: 'onboarding_step9_desc' },
+    { icon: '🎁', titleKey: 'onboarding_step11_title', descKey: 'onboarding_step11_desc' },
     { icon: '🚀', titleKey: 'onboarding_step10_title', descKey: 'onboarding_step10_desc' }
 ];
 
@@ -1165,8 +1411,9 @@ function applyTranslations() {
         }
     });
 
-    // Update labels array placeholders
-    if (labels && labels.length === 5 && labels[0].id === 'name') {
+    // Update labels array placeholders (chỉ khi labels chưa bị tùy chỉnh)
+    if (labels && labels.length === DEFAULT_LABELS.length &&
+        labels.every((l, i) => l.id === DEFAULT_LABELS[i].id)) {
         labels[0].title = t('label_name');
         labels[1].title = t('label_code');
         labels[2].title = t('label_day');
@@ -1229,11 +1476,16 @@ function initExtraFeatures() {
                 return;
             }
             let csvContent = "";
-            const headerRow = labels.map(l => `"${l.title}"`).join(',') + ',"Color"';
+            const headerRow = labels.map(l => `"${String(l.title).replace(/"/g, '""')}"`).join(',') + ',"Color"';
             csvContent += headerRow + "\n";
 
             subjects.forEach(subject => {
-                const row = labels.map(l => `"${subject.fields[l.id] || ''}"`).join(',');
+                const row = labels.map(l => {
+                    let val = subject.fields[l.id] || '';
+                    val = String(val).replace(/"/g, '""');
+                    if (/^[=+\-@]/.test(val)) val = "'" + val;
+                    return `"${val}"`;
+                }).join(',');
                 csvContent += row + `,"${subject.color}"\n`;
             });
 
@@ -1245,6 +1497,7 @@ function initExtraFeatures() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         });
     }
 
@@ -1319,10 +1572,13 @@ function initExtraFeatures() {
     }
 
     if (btnCopyQr) {
-        btnCopyQr.addEventListener('click', () => {
+        btnCopyQr.addEventListener('click', async () => {
             const input = document.getElementById('qrShareCode');
-            input.select();
-            document.execCommand('copy');
+            try {
+                await navigator.clipboard.writeText(input.value);
+            } catch (e) {
+                console.error('Copy failed:', e);
+            }
             const originalText = btnCopyQr.textContent;
             btnCopyQr.textContent = t('qr_copied');
             setTimeout(() => { btnCopyQr.textContent = originalText; }, 2000);
@@ -1342,7 +1598,7 @@ function initExtraFeatures() {
                 subjectStrings.forEach((sStr, i) => {
                     const values = sStr.split('|');
                     const subject = {
-                        id: Date.now() + i,
+                        id: crypto.randomUUID(),
                         fields: {},
                         isActive: true,
                         color: highlightColors[subjects.length % highlightColors.length]
